@@ -25,7 +25,10 @@ class SimpleHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"Atlas Bot v11 is live")
 
 def run_web_server():
-    server = HTTPServer(('0.0.0.0', 10000), SimpleHandler)
+    # On lit le port envoyé par Koyeb, sinon on met 8000 par défaut
+    port = int(os.environ.get("PORT", 8000))
+    server = HTTPServer(('0.0.0.0', port), SimpleHandler)
+    print(f"🌍 Serveur fantôme actif sur le port {port}")
     server.serve_forever()
 
 threading.Thread(target=run_web_server, daemon=True).start()
