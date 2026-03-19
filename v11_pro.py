@@ -146,4 +146,4 @@ while True:
             time.sleep(5) 
 
     print("\n⏳ Scan terminé. Repos 6 heures...")
-    time.sleep(21600)
+    time.sleep(10800)
