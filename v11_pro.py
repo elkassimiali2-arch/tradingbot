@@ -133,4 +133,4 @@ while True:
                 file.write(f"{date_str},{symbol},{prix},\"{verdict_clean}\"\n")
                 
     print(f"\n⏳ Scan terminé. Repos 30 minutes...")
-    time.sleep(1800)
+    time.sleep(10800)
