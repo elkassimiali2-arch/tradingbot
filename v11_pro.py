@@ -142,7 +142,7 @@ while True:
             prix_actuel = last['close']
             verdict = demander_ia_expert(s, prix_actuel, last.to_dict(), ema200)
             
-            header = f"📊 *ATLAS v13.3 : {s}*\n💰 *Prix :* `{prix_actuel:,.2f}$`"
+            header = f"📊 *ATLAS Recap : {s}*\n💰 *Prix :* `{prix_actuel:,.2f}$`"
             msg = f"{header}\n\n`{verdict}`"
             envoyer_telegram(msg)
             
