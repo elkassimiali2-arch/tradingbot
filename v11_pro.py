@@ -26,7 +26,7 @@ class SimpleHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
-        self.wfile.write(b"Atlas v14.1 Full Logs Online")
+        self.wfile.write(b"Atlas v14.2 Fixed Online")
     def log_message(self, format, *args): return
 
 def run_web_server():
@@ -70,7 +70,7 @@ def get_data(symbol):
         vol_ratio = df_h1['vol'].iloc[-1] / vol_ma20 if vol_ma20 > 0 else 1.0
         
         ema_series = df_d1.ta.ema(length=200)
-        ema200 = float(ema_series.iloc[-1]) if ema_series is not None else None
+        ema200 = float(ema_series.iloc[-1]) if (ema_series is not None and not ema_series.empty) else None
         
         ph, pl, pc = df_d1['high'].iloc[-2], df_d1['low'].iloc[-2], df_d1['close'].iloc[-2]
         pivot = (ph + pl + pc) / 3
@@ -97,12 +97,16 @@ def pre_filter(last):
 def demander_ia_expert(symbol, last, ema200):
     def fv(key, prec=2):
         val = last.get(key)
-        return f"{float(val):.{prec}f}" if val is not None else "N/A"
+        try: return f"{float(val):.{prec}f}" if val is not None else "N/A"
+        except: return "N/A"
         
+    # Correction de l'erreur de formatage ici :
+    ema_txt = f"{ema200:.2f}" if ema200 is not None else "N/A"
+    
     prompt = f"""Agis en tant qu'Expert Trader. Analyse {symbol} à {last['close']:.2f}$. 
     H1: RSI {fv('RSI_14', 1)}, Vol x{fv('vol_ratio')}, ADX {fv('ADX_14', 1)}. 
     H4: RSI {fv('rsi_h4', 1)}. 
-    D1: EMA200 {ema200:.2f if ema200 else 'N/A'}, Pivot R1 {fv('p_r1')}, S1 {fv('p_s1')}. 
+    D1: EMA200 {ema_txt}, Pivot R1 {fv('p_r1')}, S1 {fv('p_s1')}. 
     
     MISSION: Signal ACHAT/VENTE/ATTENTE. Ratio 1.2-2.0. 
     Format: SIGNAL: [X], TP: [X], SL: [X], ANALYSE: [Justification technique courte]."""
@@ -131,7 +135,7 @@ print("⏳ Stabilisation Koyeb (60s)...")
 time.sleep(60)
 
 while True:
-    print(f"\n🚀 SCAN ATLAS v14.1 - {datetime.now().strftime('%H:%M:%S')}")
+    print(f"\n🚀 SCAN ATLAS v14.2 - {datetime.now().strftime('%H:%M:%S')}")
     signals_sent = 0
     
     for s in SYMBOLS:
@@ -145,7 +149,7 @@ while True:
             continue
             
         verdict = demander_ia_expert(s, last, ema200)
-        print(f"  🤖 Verdict IA :\n{verdict}\n") # Affiche tout dans Koyeb
+        print(f"  🤖 Verdict IA :\n{verdict}\n")
         
         if "ATTENTE" in verdict.upper() or is_duplicate(s, verdict):
             continue
@@ -157,7 +161,7 @@ while True:
         except: pass
         
         signals_sent += 1
-        time.sleep(12) # Anti-spam
+        time.sleep(12) 
         
     print(f"✅ Cycle terminé. Envoyés: {signals_sent}/{len(SYMBOLS)}. Repos 0,5h.")
     time.sleep(1800)
