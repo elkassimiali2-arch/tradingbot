@@ -102,7 +102,7 @@ def demander_ia_expert(symbol, prix, c_stats, ema200):
     atr_txt = f_val(c_stats.get('ATR_14'), 2)
     e200_txt = f_val(ema200, 2)
 
-    prompt = f"""Salut Trader ! Agis en tant qu'expert trader. Analyse {symbol} à {prix}$.
+    prompt = f"""Salut Trader ! Agis en tant qu'expert trader, respecte le format ci dessous et sois concis. Analyse {symbol} à {prix}$.
     Données techniques : RSI {rsi_txt}, EMA20 {ema20_txt}, MACD {macd_txt}, ATR {atr_txt}, EMA200 {e200_txt}.
     
     Réponds EXCLUSIVEMENT sous ce format texte (pas de gras) :
