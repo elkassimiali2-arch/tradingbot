@@ -121,4 +121,4 @@ while True:
         emoji = "🟢" if "ACHAT" in verdict.upper() else "🔴"
         envoyer_telegram(f"{emoji} *{s}*\n`{verdict}`")
         signals_sent += 1; time.sleep(12)
-    print(f"✅ Cycle terminé. Envoyés: {signals_sent}/{len(SYMBOLS)}. Repos 3h."); time.sleep(10800)
+    print(f"✅ Cycle terminé. Envoyés: {signals_sent}/{len(SYMBOLS)}. Repos 0,5h."); time.sleep(1800)
