@@ -159,5 +159,5 @@ while True:
         signals_sent += 1
         time.sleep(12) # Anti-spam
         
-    print(f"✅ Cycle terminé. Envoyés: {signals_sent}/{len(SYMBOLS)}. Repos 3h.")
+    print(f"✅ Cycle terminé. Envoyés: {signals_sent}/{len(SYMBOLS)}. Repos 0,5h.")
     time.sleep(1800)
