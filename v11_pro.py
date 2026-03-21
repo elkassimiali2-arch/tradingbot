@@ -1,149 +1,136 @@
 import sys
 from types import ModuleType
 
-# --- 1. CORRECTIF PYTHON 3.14 (Priorité Haute) ---
+# --- 1. CORRECTIF CRITIQUE POUR PYTHON 3.14 (NUMBA MOCK) ---
+# Ce bloc doit impérativement rester au début du fichier
 if 'numba' not in sys.modules:
     m = ModuleType('numba')
     m.njit = lambda f=None, *a, **k: (lambda x: x) if f is None else f
     sys.modules['numba'] = m
 
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
 import os
 import time
 import requests
+import json
 from datetime import datetime
 from dotenv import load_dotenv
 import pandas as pd
 import pandas_ta as ta
 from binance.client import Client
 
-# --- 2. SERVEUR FANTÔME POUR RENDER (Port 10000) ---
-class SimpleHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200); self.end_headers()
-        self.wfile.write(b"Atlas Bot v11 is live")
-
-def run_web_server():
-    # On lit le port envoyé par Koyeb, sinon on met 8000 par défaut
-    port = int(os.environ.get("PORT", 8000))
-    server = HTTPServer(('0.0.0.0', port), SimpleHandler)
-    print(f"🌍 Serveur fantôme actif sur le port {port}")
-    server.serve_forever()
-
-threading.Thread(target=run_web_server, daemon=True).start()
-
-# --- 3. CONFIGURATION (Chargement depuis key.env) ---
+# --- 2. CONFIGURATION & CLÉS ---
 load_dotenv("key.env")
 BINANCE_KEY = os.getenv('BINANCE_API_KEY')
-# Système multi-clés pour Google Gemini
-GOOGLE_KEYS = [os.getenv('GOOGLE_API_KEY'), os.getenv('GOOGLE_API_KEY_2')]
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+GOOGLE_KEY = os.getenv('GOOGLE_API_KEY')
 
+# Initialisation Binance (Lecture seule)
 client_binance = Client(BINANCE_KEY, "")
 SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "AVAXUSDT"]
+HISTORIQUE_FILE = "historique_signaux.csv"
 
-# --- 4. FONCTIONS DE TRAITEMENT ---
-def envoyer_telegram(message):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: return
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+# --- 3. DIAGNOSTIC DES MODÈLES GOOGLE ---
+def lister_modeles_valides():
+    """Vérifie quels modèles sont autorisés avec ta clé API"""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GOOGLE_KEY}"
     try:
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}, timeout=10)
-    except: pass
+        response = requests.get(url)
+        res = response.json()
+        if 'models' in res:
+            # On filtre les modèles capables de générer du contenu
+            return [m['name'].split('/')[-1] for m in res['models'] if 'generateContent' in m['supportedGenerationMethods']]
+        else:
+            return []
+    except:
+        return []
 
-def get_expert_data(symbol):
+print("🔍 Vérification de tes droits Google AI...")
+MODELES = lister_modeles_valides()
+
+if not MODELES:
+    print("⚠️ Aucun modèle IA trouvé. Vérifie ta clé dans key.env.")
+    ACTIVE_MODEL = "gemini-1.5-flash" # Valeur par défaut au cas où
+else:
+    ACTIVE_MODEL = MODELES[0]
+    print(f"✅ Succès ! Modèle détecté : {ACTIVE_MODEL}")
+
+# --- 4. FONCTIONS DE CALCUL & IA ---
+def get_data(symbol):
     try:
-        cols = ['time','open','high','low','close','vol','ct','q_av','tr','tb','tq','ig']
-        h = client_binance.get_historical_klines(symbol, Client.KLINE_INTERVAL_1HOUR, "100 hours ago UTC")
-        df = pd.DataFrame(h, columns=cols)
-        df[['close','high','low','open']] = df[['close','high','low','open']].apply(pd.to_numeric)
+        # Récupère 100h pour le court terme et 300j pour l'EMA 200
+        h_data = client_binance.get_historical_klines(symbol, Client.KLINE_INTERVAL_1HOUR, "100 hours ago UTC")
+        d_data = client_binance.get_historical_klines(symbol, Client.KLINE_INTERVAL_1DAY, "300 days ago UTC")
         
-        # Calcul des indicateurs techniques (Python)
-        df.ta.rsi(length=14, append=True)
-        df.ta.ema(length=20, append=True)
-        df.ta.macd(fast=12, slow=26, signal=9, append=True)
+        # DataFrame Court Terme (1h)
+        df_h = pd.DataFrame(h_data, columns=['time','open','high','low','close','vol','ct','q_av','tr','tb','tq','ig'])
+        df_h[['close','high','low']] = df_h[['close','high','low']].apply(pd.to_numeric)
+        df_h.ta.rsi(length=14, append=True)
+        df_h.ta.ema(length=20, append=True)
         
-        # Récupération de l'EMA200 sur 1 jour
-        d = client_binance.get_historical_klines(symbol, Client.KLINE_INTERVAL_1DAY, "250 days ago UTC")
-        df_d = pd.DataFrame(d, columns=cols)
+        # DataFrame Long Terme (1j)
+        df_d = pd.DataFrame(d_data, columns=['time','open','high','low','close','vol','ct','q_av','tr','tb','tq','ig'])
         df_d['close'] = pd.to_numeric(df_d['close'])
-        ema200 = df_d.ta.ema(length=200).iloc[-1]
+        df_d.ta.ema(length=200, append=True)
         
-        return df.iloc[-1], ema200
-    except: return None, None
+        return df_h.iloc[-1], df_d.iloc[-1]
+    except Exception as e:
+        print(f"❌ Erreur Data {symbol}: {e}")
+        return None, None
 
-def demander_ia_expert(symbol, prix, stats, ema200):
-    # Prompt de la v9 (Format strict sans gras)
-    prompt = f"""Expert Trading Crypto. Analyse {symbol} à {prix}$.
-    Stats: RSI {stats.get('RSI_14',0):.1f}, MACD {stats.get('MACDH_12_26_9',0):.2f}, EMA200 {ema200:.2f}.
+def demander_ia(symbol, prix, c_stats, f_stats):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{ACTIVE_MODEL}:generateContent?key={GOOGLE_KEY}"
+    headers = {'Content-Type': 'application/json'}
     
-    Réponds EXCLUSIVEMENT sous ce format texte (sans gras, sans astérisques) :
-    ======================================
-    SIGNAL    : [ ACHAT, VENTE ou ATTENTE ]
-    CONFIANCE : X%
-    --------------------------------------
-    TP: X | SL: X
-    TAILLE    : X%
-    ANALYSE   : (Fournis une analyse technique détaillée incluant les supports, résistances et la structure du marché en 3 ou 4 phrases précises)
-    ======================================"""
+    prompt = f"""Expert Trader pour Ali G. Analyse {symbol} à {prix}$.
+    Court Terme (1h): RSI {c_stats.get('RSI_14'):.1f}, EMA20 {c_stats.get('EMA_20'):.1f}.
+    Long Terme (1j): EMA200 {f_stats.get('EMA_200'):.1f}.
+    
+    Réponds précisément en français :
+    1. SCORE : X/100
+    2. ACTION : (ACHAT, VENTE ou ATTENTE)
+    3. STRATÉGIE : % Portefeuille, Take Profit (prix), Stop Loss (prix)
+    4. POURQUOI : 1 phrase simple."""
+    
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        res = response.json()
+        return res['candidates'][0]['content']['parts'][0]['text']
+    except:
+        return "⚠️ L'IA n'a pas pu répondre (Vérifie ton quota ou ta clé)."
 
-    # Système de bascule multi-clés (Failover)
-    for i, key in enumerate(GOOGLE_KEYS):
-        if not key: continue
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={key}"
-        try:
-            res = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=15)
-            data = res.json()
-            if 'candidates' in data:
-                return data['candidates'][0]['content']['parts'][0]['text']
-        except: print(f"⚠️ Clé Gemini {i+1} en erreur.")
-
-    # Si toutes les clés ont échoué
-    return "======================================\nSIGNAL    : [ ERREUR ]\nANALYSE   : Quotas IA épuisés sur toutes les clés.\n======================================"
-
-# --- 5. BOUCLE PRINCIPALE (INTÉGRATION DU VISUEL) ---
-print("="*50)
-print("🚀 ATLAS v11 PRO : INTÉGRATION VISUELLE & DOUBLE CLÉ")
+# --- 5. BOUCLE DE SCAN ---
+print("\n" + "="*50)
+print("🚀 BOTG-TRADE : ANALYSE COMPLETE + IA ACTIVE")
 print("="*50)
 
 while True:
-    ts = datetime.now().strftime('%H:%M:%S')
+    print(f"\n📢 SCAN DU {datetime.now().strftime('%H:%M:%S')}")
     
-    for s in SYMBOLS:
-        last, ema200 = get_expert_data(s)
+    for symbol in SYMBOLS:
+        c, f = get_data(symbol)
         
-        if last is not None:
-            prix = last['close']
+        if c is not None and f is not None:
+            prix = c['close']
+            rsi = c.get('RSI_14', 50)
+            ema200 = f.get('EMA_200', 0)
             
-            # --- CALCUL DE LA TENDANCE (Image 3) ---
-            tendance = "Bull 📈" if prix > ema200 else "Bear 📉"
+            print(f"\n💎 --- {symbol} ---")
             
-            # Construction du Header d'Analyse Complète
-            # On ajoute des étoiles pour le gras sur la première ligne
-            header_integre = (
-                f"📊 *ANALYSE TECHNIQUE : {s}*\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"💰 *Prix :* `{prix:,.2f}$` \n"
-                f"📈 *Tendance :* `{tendance}`\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-            )
+            # --- ANALYSE TECHNIQUE SCRIPT ---
+            tend = "📈 BULL" if prix > ema200 else "📉 BEAR"
+            print(f"  [TECH] Tendance: {tend} | RSI: {rsi:.1f} | Prix: {prix:,.2f}$")
             
-            # Affichage console (Look Atlas v11)
-            print(f"\n📢 SCAN DU {ts}")
-            print(header_integre.replace('*','')) # Affiche proprement dans la console
-            print(f"🔍 Consultation de l'IA (Format Atlas)...")
+            # --- ANALYSE IA ---
+            print(f"  🔍 Consultation de {ACTIVE_MODEL}...")
+            verdict_ia = demander_ia(symbol, prix, c.to_dict(), f.to_dict())
+            print(f"  🤖 VERDICT IA :\n{verdict_ia}")
             
-            # Consultation IA pour le Dashboard
-            verdict = demander_ia_expert(s, prix, last.to_dict(), ema200)
-            print(verdict)
-            
-            # Envoi Telegram : Tendance + Verdict aligné
-            # On utilise les backticks uniquement autour du verdict pour garder l'alignement
-            msg_telegram = f"{header_integre}\n🔍 *Verdict IA :*\n`{verdict}`"
-            envoyer_telegram(msg_telegram)
-            
-            time.sleep(5) 
-
-    print("\n⏳ Scan terminé. Repos 6 heures...")
-    time.sleep(10800)
+            # Sauvegarde CSV
+            with open(HISTORIQUE_FILE, "a", encoding="utf-8") as file:
+                date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                verdict_clean = verdict_ia.replace('\n', ' ').replace('"', "'")
+                file.write(f"{date_str},{symbol},{prix},\"{verdict_clean}\"\n")
+                
+    print(f"\n⏳ Scan terminé. Repos 30 minutes...")
+    time.sleep(1800)
