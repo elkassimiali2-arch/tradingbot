@@ -85,13 +85,13 @@ def demander_ia_expert(symbol, prix, stats, ema200):
     --------------------------------------
     TP: X | SL: X
     TAILLE    : X%
-    ANALYSE   : (Une phrase courte d'explication)
+    ANALYSE   : (Fournis une analyse technique détaillée incluant les supports, résistances et la structure du marché en 3 ou 4 phrases précises)
     ======================================"""
 
     # Système de bascule multi-clés (Failover)
     for i, key in enumerate(GOOGLE_KEYS):
         if not key: continue
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={key}"
         try:
             res = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=15)
             data = res.json()
