@@ -103,5 +103,5 @@ while True:
             # PAUSE ENTRE LES CRYPTOS (Pour ne pas saturer l'API)
             time.sleep(15) 
 
-    print(f"⏳ Repos 1h...")
-    time.sleep(3600)
+    print(f"⏳ Repos 3h...")
+    time.sleep(10800)
