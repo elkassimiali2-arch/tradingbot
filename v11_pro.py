@@ -107,5 +107,5 @@ while True:
             envoyer_telegram(msg)
             time.sleep(15) 
 
-    print("✅ Cycle terminé. Repos 1h.")
-    time.sleep(3600)
+    print("✅ Cycle terminé. Repos 3h.")
+    time.sleep(10800)
