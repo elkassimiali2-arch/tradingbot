@@ -56,7 +56,7 @@ TELEGRAM_CHAT_ID = os.getenv(‘TELEGRAM_CHAT_ID’)
 
 client_binance = Client(BINANCE_KEY, “”)
 
-# SYMBOLES — tu peux étendre selon ton tableau récap
+# SYMBOLES - tu peux étendre selon ton tableau récap
 
 SYMBOLS = [“BTCUSDT”, “ETHUSDT”, “SOLUSDT”, “AVAXUSDT”, “XRPUSDT”, “NEARUSDT”]
 
@@ -341,14 +341,14 @@ INTER_WAIT = 12         # délai entre chaque symbole (évite rate-limit Gemini)
 while True:
 now = datetime.now().strftime(’%H:%M:%S’)
 print(f”\n{’=’*50}”)
-print(f”🚀 Atlas v14.0 — Scan {now}”)
+print(f”🚀 Atlas v14.0 - Scan {now}”)
 print(f”{’=’*50}”)
 
 ```
 signals_sent = 0
 
 for s in SYMBOLS:
-    print(f"\n🔍 {s} — collecte données...")
+    print(f"\n🔍 {s} - collecte données...")
     last, ema200 = get_data(s)
 
     if last is None:
@@ -369,13 +369,13 @@ for s in SYMBOLS:
 
     # On n'envoie pas les ATTENTE
     if signal_type == 'ATTENTE':
-        print(f"  💤 Signal ATTENTE — pas d'envoi Telegram")
+        print(f"  💤 Signal ATTENTE - pas d'envoi Telegram")
         time.sleep(INTER_WAIT)
         continue
 
     # Déduplication
     if is_duplicate(s, verdict):
-        print(f"  🔁 Signal identique au précédent — ignoré")
+        print(f"  🔁 Signal identique au précédent - ignoré")
         time.sleep(INTER_WAIT)
         continue
 
@@ -386,7 +386,7 @@ for s in SYMBOLS:
     vol_emoji   = "🔥" if vol_ratio >= 1.5 else ("📊" if vol_ratio >= 1.0 else "🔇")
 
     msg = (
-        f"{emoji} *ATLAS v14.0 — {s}* {emoji}\n"
+        f"{emoji} *ATLAS v14.0 - {s}* {emoji}\n"
         f"💰 Prix : `{close_price:,.4f} $`\n"
         f"{vol_emoji} Volume : `x{vol_ratio:.2f}` vs moy 20h\n"
         f"📡 Signal : *{signal_type}*\n\n"
@@ -399,7 +399,7 @@ for s in SYMBOLS:
     time.sleep(INTER_WAIT)
 
 summary = (
-    f"✅ *Cycle terminé* — {datetime.now().strftime('%H:%M:%S')}\n"
+    f"✅ *Cycle terminé* - {datetime.now().strftime('%H:%M:%S')}\n"
     f"📬 Signaux envoyés : *{signals_sent}/{len(SYMBOLS)}*\n"
     f"⏳ Prochain scan dans 3 heures."
 )
