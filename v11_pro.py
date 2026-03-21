@@ -20,13 +20,11 @@ import numpy as np
 import pandas_ta as ta
 from binance.client import Client
 
-# --- 2. SERVEUR WEB (Health Check Koyeb) ---
+# --- 2. SERVEUR WEB ---
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-type', 'text/plain')
-        self.end_headers()
-        self.wfile.write(b"Atlas v14.2 Fixed Online")
+        self.send_response(200); self.send_header('Content-type', 'text/plain'); self.end_headers()
+        self.wfile.write(b"Atlas v14.3 Full Indicators Online")
     def log_message(self, format, *args): return
 
 def run_web_server():
@@ -48,7 +46,7 @@ SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "AVAXUSDT", "XRPUSDT", "NEARUSDT"]
 ACTIVE_MODEL = "gemini-2.5-flash"
 last_signal_hash = {}
 
-# --- 4. FONCTIONS DE RÉCUPÉRATION ---
+# --- 4. DATA ENGINE ---
 def get_data(symbol):
     try:
         raw_h1 = client_binance.get_historical_klines(symbol, Client.KLINE_INTERVAL_1HOUR, "200 hours ago UTC")
@@ -63,12 +61,16 @@ def get_data(symbol):
             
         df_h1, df_h4, df_d1 = to_df(raw_h1), to_df(raw_h4), to_df(raw_d1)
         
-        df_h1.ta.rsi(append=True); df_h1.ta.macd(append=True); df_h1.ta.atr(append=True); df_h1.ta.adx(append=True)
-        df_h4.ta.rsi(append=True); df_h4.ta.adx(append=True)
+        # H1 Indicators
+        df_h1.ta.rsi(append=True)
+        df_h1.ta.macd(append=True)
+        df_h1.ta.adx(append=True)
+        df_h1.ta.bbands(append=True)
         
         vol_ma20 = df_h1['vol'].rolling(20).mean().iloc[-1]
         vol_ratio = df_h1['vol'].iloc[-1] / vol_ma20 if vol_ma20 > 0 else 1.0
         
+        # D1 & H4
         ema_series = df_d1.ta.ema(length=200)
         ema200 = float(ema_series.iloc[-1]) if (ema_series is not None and not ema_series.empty) else None
         
@@ -79,89 +81,72 @@ def get_data(symbol):
         res = df_h1.iloc[-1].to_dict()
         res.update({
             'vol_ratio': round(vol_ratio, 2), 
-            'rsi_h4': df_h4['RSI_14'].iloc[-1], 
-            'adx_h4': df_h4['ADX_14'].iloc[-1], 
+            'rsi_h4': df_h4.ta.rsi().iloc[-1], 
             'p_r1': r1, 'p_s1': s1
         })
         return res, ema200
     except Exception as e:
-        print(f"  ❌ Erreur Data {symbol}: {e}")
-        return None, None
+        print(f"  ❌ Erreur Data {symbol}: {e}"); return None, None
 
-def pre_filter(last):
-    vol_r = float(last.get('vol_ratio', 1.0))
-    if vol_r < 0.7: return False, f"Volume faible (x{vol_r})"
-    return True, f"Volume OK (x{vol_r})"
-
-# --- 5. LOGIQUE IA ---
+# --- 5. EXPERT IA ---
 def demander_ia_expert(symbol, last, ema200):
     def fv(key, prec=2):
         val = last.get(key)
         try: return f"{float(val):.{prec}f}" if val is not None else "N/A"
         except: return "N/A"
         
-    # Correction de l'erreur de formatage ici :
     ema_txt = f"{ema200:.2f}" if ema200 is not None else "N/A"
     
-    prompt = f"""Agis en tant qu'Expert Trader. Analyse {symbol} à {last['close']:.2f}$. 
-    H1: RSI {fv('RSI_14', 1)}, Vol x{fv('vol_ratio')}, ADX {fv('ADX_14', 1)}. 
-    H4: RSI {fv('rsi_h4', 1)}. 
-    D1: EMA200 {ema_txt}, Pivot R1 {fv('p_r1')}, S1 {fv('p_s1')}. 
-    
-    MISSION: Signal ACHAT/VENTE/ATTENTE. Ratio 1.2-2.0. 
-    Format: SIGNAL: [X], TP: [X], SL: [X], ANALYSE: [Justification technique courte]."""
+    prompt = f"""Expert Trader. Analyse {symbol} à {last['close']:.2f}$.
+    H1 STATS:
+    - RSI: {fv('RSI_14', 1)} | MACD: {fv('MACD_12_26_9')} (Hist: {fv('MACDh_12_26_9')})
+    - ADX: {fv('ADX_14', 1)} | Vol: x{fv('vol_ratio')}
+    - Bollinger: Low {fv('BBL_20_2.0')} | High {fv('BBU_20_2.0')}
+    H4 STATS:
+    - RSI: {fv('rsi_h4', 1)}
+    D1 MACRO:
+    - EMA200: {ema_txt} | Pivot R1: {fv('p_r1')} | S1: {fv('p_s1')}
+
+    MISSION: Signal ACHAT/VENTE/ATTENTE. Ratio 1.2-2.0.
+    Format: SIGNAL: [X], TP: [X], SL: [X], ANALYSE: [4 phrases max]."""
 
     for key in GOOGLE_KEYS:
         if not key: continue
         try:
-            res = requests.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{ACTIVE_MODEL}:generateContent?key={key}", 
-                json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.2}}, 
-                timeout=20
-            )
+            res = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{ACTIVE_MODEL}:generateContent?key={key}", 
+                json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.2}}, timeout=20)
             return res.json()['candidates'][0]['content']['parts'][0]['text']
         except: pass
     return "ATTENTE (Quotas épuisés)"
 
-def is_duplicate(symbol, verdict):
-    first_line = verdict.strip().splitlines()[0] if verdict.strip() else ""
-    h = hashlib.md5(f"{symbol}:{first_line}".encode()).hexdigest()
-    if last_signal_hash.get(symbol) == h: return True
-    last_signal_hash[symbol] = h
-    return False
-
-# --- 6. BOUCLE PRINCIPALE ---
+# --- 6. MAIN LOOP ---
 print("⏳ Stabilisation Koyeb (60s)...")
 time.sleep(60)
 
 while True:
-    print(f"\n🚀 SCAN ATLAS v14.2 - {datetime.now().strftime('%H:%M:%S')}")
+    print(f"\n🚀 SCAN ATLAS v14.3 - {datetime.now().strftime('%H:%M:%S')}")
     signals_sent = 0
-    
     for s in SYMBOLS:
-        print(f"🔍 {s} : Analyse en cours...")
-        last, ema200 = get_data(s)
+        print(f"🔍 {s} : Analyse complète..."); last, ema200 = get_data(s)
         if last is None: continue
         
-        ok, reason = pre_filter(last)
-        if not ok:
-            print(f"  ⏭️ Ignoré : {reason}")
-            continue
+        # Filtre Volume (ajusté à 0.6 pour plus de signaux)
+        if float(last.get('vol_ratio', 1.0)) < 0.6:
+            print(f"  ⏭️ Volume trop faible."); continue
             
         verdict = demander_ia_expert(s, last, ema200)
         print(f"  🤖 Verdict IA :\n{verdict}\n")
         
-        if "ATTENTE" in verdict.upper() or is_duplicate(s, verdict):
-            continue
-            
+        if "ATTENTE" in verdict.upper(): continue
+        
+        h = hashlib.md5(f"{s}:{verdict.strip().splitlines()[0]}".encode()).hexdigest()
+        if last_signal_hash.get(s) == h: continue
+        last_signal_hash[s] = h
+        
         emoji = "🟢" if "ACHAT" in verdict.upper() else "🔴"
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         msg = f"{emoji} *{s}*\n`{verdict}`"
-        try: requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=10)
+        try: requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"})
         except: pass
+        signals_sent += 1; time.sleep(12)
         
-        signals_sent += 1
-        time.sleep(12) 
-        
-    print(f"✅ Cycle terminé. Envoyés: {signals_sent}/{len(SYMBOLS)}. Repos 0,5h.")
-    time.sleep(1800)
+    print(f"✅ Cycle terminé. Envoyés: {signals_sent}/{len(SYMBOLS)}. Repos 0,5h."); time.sleep(1800)
