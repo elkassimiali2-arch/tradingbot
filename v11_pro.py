@@ -190,5 +190,5 @@ while True:
         signals_sent += 1
         time.sleep(12)
 
-    envoyer_telegram(f"✅ Cycle terminé. Envoyés: {signals_sent}/{len(SYMBOLS)}. Prochain scan: 3h.")
-    time.sleep(14400)
+    envoyer_telegram(f"✅ Cycle terminé. Envoyés: {signals_sent}/{len(SYMBOLS)}. Prochain scan: 0,5h.")
+    time.sleep(1800)
