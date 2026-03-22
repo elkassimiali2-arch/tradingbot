@@ -417,7 +417,7 @@ def is_duplicate(symbol, direction, score_w):
 # BOUCLE PRINCIPALE
 # =============================================================
 
-CYCLE_WAIT  = 3600
+CYCLE_WAIT  = 9000
 INTER_DELAY = 12
 
 log("Stabilisation Koyeb (60s)...")
@@ -492,14 +492,11 @@ while True:
 
             msg = (
                 f"{emoji} *ATLAS v17.1 - {s}* {emoji}\n"
-                f"💰 Prix : `{close:.6f} $`\n"
+                f"💰 Prix : `{close:.2f} $`\n"
                 f"📊 Score : ` {score_w:.1f}/{SCORE_MAX} ({pct}%)`\n"
-                f"🎯 TP : `{tp:.6f}` | SL : `{sl:.6f}`\n"
+                f"🎯 TP : `{tp:.2f}` | SL : `{sl:.2f}`\n"
                 f"⚖️ Ratio G/R : `{ratio_gr}`\n"
-                f"{vol_icon} Vol : `x{vol_r:.2f}` | ATR : `{atr_v:.4f}`\n"
-                f"📐 BB : `{f'{bb_w:.2f}%' if bb_w else 'N/A'}` | "
-                f"StochK : `{f'{sk:.1f}' if sk else 'N/A'}`\n"
-                f"🌡️ Funding : `{fr_txt}` | F&G : `{fg_txt}`\n\n"
+                f"{vol_icon} Vol : `x{vol_r:.2f}` | F&G : `{fg_txt}`\n\n"
                 f"📝 *Analyse :*\n{analyse}"
             )
 
@@ -519,7 +516,7 @@ while True:
         f"🏁 *Cycle termine* ({now_end})\n"
         f"Signaux envoyes : *{sent}/{len(SYMBOLS)}*\n"
         f"Score insuffisant : {low_score} | Skips : {skipped}\n"
-        f"Prochain scan dans 60 min."
+        f"Prochain scan dans 180 min."
     )
     log(f"\n{done_msg.replace('*','')}")
     envoyer_telegram(done_msg)
