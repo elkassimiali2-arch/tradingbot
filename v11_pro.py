@@ -1,7 +1,6 @@
 import sys
 from types import ModuleType
 
-# Correctif Numba pour Python récent
 if 'numba' not in sys.modules:
     m = ModuleType('numba')
     m.njit = lambda f=None, *a, **k: (lambda x: x) if f is None else f
@@ -27,7 +26,7 @@ class SimpleHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
-        self.wfile.write(b"Atlas v16.0 Online")
+        self.wfile.write(b"Atlas v17.0 Online")
     def log_message(self, format, *args): return
 
 def run_web_server():
@@ -49,8 +48,98 @@ TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 client_binance   = Client(BINANCE_KEY, "")
 SYMBOLS          = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT", "LINKUSDT", "AVAXUSDT"]
 ACTIVE_MODEL     = "gemini-2.5-flash"
-SCORE_MIN        = 4    # conditions minimum sur 6 pour valider un setup
 last_signal_hash = {}
+
+# =============================================================
+# V17 : PARAMETRES SCORE PONDERE + ADAPTATIF
+# =============================================================
+
+WEIGHTS = {
+    'C1': 2.0, 'C2': 1.5, 'C3': 2.0,
+    'C4': 1.0, 'C5': 1.0, 'C6': 0.5,
+    'C7': 1.5, 'C8': 1.0,
+}
+SCORE_MAX = sum(WEIGHTS.values())   # 10.5
+
+# =============================================================
+# DIAGNOSTIC TELEGRAM AU DEMARRAGE
+# =============================================================
+
+def diagnostic_telegram():
+    log("\n=== DIAGNOSTIC TELEGRAM ===")
+    if not TELEGRAM_TOKEN:
+        log("  [ERREUR] TELEGRAM_TOKEN absent de key.env")
+        return False
+    if not TELEGRAM_CHAT_ID:
+        log("  [ERREUR] TELEGRAM_CHAT_ID absent de key.env")
+        return False
+    log(f"  TOKEN   : OK ({TELEGRAM_TOKEN[:10]}...)")
+    log(f"  CHAT_ID : {TELEGRAM_CHAT_ID}")
+    try:
+        r = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getMe", timeout=10)
+        data = r.json()
+        if data.get('ok'):
+            log(f"  Bot valide : @{data['result']['username']}")
+        else:
+            log(f"  [ERREUR] Token invalide : {data.get('description')}")
+            return False
+    except Exception as e:
+        log(f"  [ERREUR] getMe failed : {e}")
+        return False
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": "🚀 *ATLAS v17.0 demarre*\nScore pondere + Adaptatif + Funding + Fear&Greed\nPremier scan dans 60s.",
+                "parse_mode": "Markdown"
+            }, timeout=10)
+        data = r.json()
+        if data.get('ok'):
+            log(f"  Message demarrage envoye OK (id={data['result']['message_id']})")
+            return True
+        else:
+            err  = data.get('error_code')
+            desc = data.get('description', '')
+            log(f"  [ERREUR] sendMessage : code={err} | {desc}")
+            return False
+    except Exception as e:
+        log(f"  [ERREUR] sendMessage exception : {e}")
+        return False
+
+# =============================================================
+# FUNDING RATE & FEAR & GREED
+# =============================================================
+
+def get_funding_rate(symbol):
+    try:
+        url = "https://fapi.binance.com/fapi/v1/premiumIndex"
+        r   = requests.get(url, params={"symbol": symbol}, timeout=8)
+        data = r.json()
+        if isinstance(data, dict) and 'lastFundingRate' in data:
+            return float(data['lastFundingRate'])
+        return None
+    except Exception as e:
+        log(f"    [FUNDING ERROR] {symbol}: {e}")
+        return None
+
+_fear_greed_cache = {'value': None, 'ts': 0}
+
+def get_fear_greed():
+    global _fear_greed_cache
+    if time.time() - _fear_greed_cache['ts'] < 3600 and _fear_greed_cache['value'] is not None:
+        return _fear_greed_cache['value']
+    try:
+        r    = requests.get("https://api.alternative.me/fng/?limit=1", timeout=8)
+        data = r.json()
+        val  = int(data['data'][0]['value'])
+        label = data['data'][0]['value_classification']
+        _fear_greed_cache = {'value': val, 'ts': time.time(), 'label': label}
+        log(f"    -> Fear&Greed : {val} ({label})")
+        return val
+    except Exception as e:
+        log(f"    [FEAR&GREED ERROR] {e}")
+        return None
 
 # =============================================================
 # DATA ENGINE
@@ -73,7 +162,6 @@ def get_data(symbol):
 
         df_h1, df_h4, df_d1 = to_df(raw_h1), to_df(raw_h4), to_df(raw_d1)
 
-        # Indicateurs H1
         df_h1.ta.rsi(length=14, append=True)
         df_h1.ta.macd(fast=12, slow=26, signal=9, append=True)
         df_h1.ta.adx(length=14, append=True)
@@ -81,7 +169,7 @@ def get_data(symbol):
         df_h1.ta.atr(length=14, append=True)
         df_h1.ta.stochrsi(length=14, rsi_length=14, k=3, d=3, append=True)
 
-        ema50_s = df_h1.ta.ema(length=50)
+        ema50_s  = df_h1.ta.ema(length=50)
         ema50_h1 = float(ema50_s.iloc[-1]) if (ema50_s is not None and not ema50_s.empty) else None
 
         atr_col = next((c for c in ['ATRr_14', 'ATR_14'] if c in df_h1.columns), None)
@@ -93,32 +181,24 @@ def get_data(symbol):
         bbu = float(df_h1[bbu_col].iloc[-1]) if bbu_col else None
         bbl = float(df_h1[bbl_col].iloc[-1]) if bbl_col else None
         bbm = float(df_h1[bbm_col].iloc[-1]) if bbm_col else None
-        bb_width = round(((bbu - bbl) / bbm) * 100, 4) if (bbu and bbl and bbm and bbm > 0) else None
+        bb_width = round(((bbu-bbl)/bbm)*100, 4) if (bbu and bbl and bbm and bbm > 0) else None
 
         stoch_k_col = next((c for c in df_h1.columns if 'STOCHRSIk' in c), None)
-        stoch_d_col = next((c for c in df_h1.columns if 'STOCHRSId' in c), None)
         stoch_k = float(df_h1[stoch_k_col].iloc[-1]) if stoch_k_col else None
-        stoch_d = float(df_h1[stoch_d_col].iloc[-1]) if stoch_d_col else None
 
         vol_abs   = float(df_h1['vol'].iloc[-1])
         vol_ma20  = df_h1['vol'].rolling(20).mean().iloc[-1]
         vol_ratio = vol_abs / vol_ma20 if vol_ma20 > 0 else 1.0
 
-        # Indicateurs H4
         df_h4.ta.rsi(length=14, append=True)
         df_h4.ta.adx(length=14, append=True)
         df_h4.ta.macd(fast=12, slow=26, signal=9, append=True)
-
         rsi_h4   = float(df_h4['RSI_14'].iloc[-1])
         adx_h4   = float(df_h4['ADX_14'].iloc[-1])
-        macd_h4  = float(df_h4['MACDh_12_26_9'].iloc[-1])
-        macds_h4 = float(df_h4['MACDs_12_26_9'].iloc[-1])
 
-        # EMA200 D1
         ema200_s = df_d1.ta.ema(length=200)
         ema200 = float(ema200_s.iloc[-1]) if (ema200_s is not None and not ema200_s.empty) else None
 
-        # Pivots J-1
         ph = df_d1['high'].iloc[-2]
         pl = df_d1['low'].iloc[-2]
         pc = df_d1['close'].iloc[-2]
@@ -130,20 +210,14 @@ def get_data(symbol):
             'vol_ratio': round(vol_ratio, 2),
             'vol_abs':   round(vol_abs, 2),
             'bb_width':  bb_width,
-            'bbu':       bbu,
-            'bbl':       bbl,
-            'bbm':       bbm,
             'stoch_k':   round(stoch_k, 2) if stoch_k is not None else None,
-            'stoch_d':   round(stoch_d, 2) if stoch_d is not None else None,
             'ema50_h1':  round(ema50_h1, 6) if ema50_h1 is not None else None,
             'rsi_h4':    round(rsi_h4, 1),
             'adx_h4':    round(adx_h4, 1),
-            'macd_h4':   round(macd_h4, 6),
-            'macds_h4':  round(macds_h4, 6),
-            'p_r1': round((2 * pivot) - pl, 6),
-            'p_r2': round(pivot + (ph - pl), 6),
-            'p_s1': round((2 * pivot) - ph, 6),
-            'p_s2': round(pivot - (ph - pl), 6),
+            'p_r1': round((2*pivot)-pl, 6),
+            'p_r2': round(pivot+(ph-pl), 6),
+            'p_s1': round((2*pivot)-ph, 6),
+            'p_s2': round(pivot-(ph-pl), 6),
         })
 
         log(f"    -> OK | Close={res['close']:.4f} | RSI={res['RSI_14']:.1f} | ADX={res['ADX_14']:.1f}")
@@ -154,133 +228,141 @@ def get_data(symbol):
         return None, None
 
 # =============================================================
-# SCORE PYTHON DETERMINISTE
+# SCORE V17 : PONDERE + ADAPTATIF + FUNDING + FEAR&GREED
 # =============================================================
 
-def compute_score(last, ema200):
-    close    = float(last.get('close', 0))
-    rsi_h1   = float(last.get('RSI_14', 50))
-    adx_h1   = float(last.get('ADX_14', 0))
-    di_plus  = float(last.get('DMP_14', 0))
-    di_minus = float(last.get('DMN_14', 0))
-    macd_h1  = float(last.get('MACDh_12_26_9', 0))
-    rsi_h4   = float(last.get('rsi_h4', 50))
-    stoch_k  = last.get('stoch_k')
-    ema50    = last.get('ema50_h1')
-    bb_width = last.get('bb_width')
+def compute_score(last, ema200, funding_rate, fear_greed):
+    close     = float(last.get('close', 0))
+    adx_h1    = float(last.get('ADX_14', 0))
+    di_plus   = float(last.get('DMP_14', 0))
+    di_minus  = float(last.get('DMN_14', 0))
+    macd_h1   = float(last.get('MACDh_12_26_9', 0))
+    rsi_h4    = float(last.get('rsi_h4', 50))
+    stoch_k   = last.get('stoch_k')
+    ema50     = last.get('ema50_h1')
+    bb_width  = last.get('bb_width')
     vol_ratio = float(last.get('vol_ratio', 1.0))
-    atr      = float(last.get('atr_val', 0))
+    atr       = float(last.get('atr_val', 0))
 
     if vol_ratio < 0.7:
-        return None, 0, {'SKIP_BLOQUANT': f"Volume faible x{vol_ratio:.2f}"}, None, None
+        return None, 0.0, 0.0, {'SKIP_BLOQUANT': f"Volume faible x{vol_ratio:.2f}"}, None, None
 
     if adx_h1 < 15:
-        return None, 0, {'SKIP_BLOQUANT': f"ADX H1 trop faible ({adx_h1:.1f})"}, None, None
+        return None, 0.0, 0.0, {'SKIP_BLOQUANT': f"ADX trop faible {adx_h1:.1f}"}, None, None
 
-    if di_plus > di_minus:
-        direction = 'ACHAT'
-    elif di_minus > di_plus:
-        direction = 'VENTE'
-    else:
-        return None, 0, {'SKIP_BLOQUANT': "DI neutre"}, None, None
+    if di_plus > di_minus: direction = 'ACHAT'
+    elif di_minus > di_plus: direction = 'VENTE'
+    else: return None, 0.0, 0.0, {'SKIP_BLOQUANT': "DI neutre"}, None, None
 
-    h4_confirme = (direction == 'ACHAT' and rsi_h4 > 50) or (direction == 'VENTE' and rsi_h4 < 50)
-    if not h4_confirme:
-        return None, 0, {'SKIP_BLOQUANT': f"H4 non confirme (RSI H4={rsi_h4:.1f})"}, None, None
+    h4_ok = (direction == 'ACHAT' and rsi_h4 > 50) or (direction == 'VENTE' and rsi_h4 < 50)
+    if not h4_ok: return None, 0.0, 0.0, {'SKIP_BLOQUANT': f"H4 non confirme RSI={rsi_h4}"}, None, None
 
     if direction == 'ACHAT':
-        c1 = di_plus > di_minus
-        c2 = macd_h1 > 0
-        c3 = rsi_h4 > 50
-        c4 = (stoch_k is not None and stoch_k < 80)
-        c5 = (ema50 is not None and close > ema50)
-        c6 = (bb_width is not None and bb_width > 2.0)
-        labels = [('C1 DI+ > DI-', c1, f"{di_plus:.1f}"), ('C2 MACD > 0', c2, f"{macd_h1:.6f}"), ('C3 RSI H4 > 50', c3, f"{rsi_h4}"), ('C4 Stoch < 80', c4, f"{stoch_k}"), ('C5 Prix > EMA50', c5, f"{ema50}"), ('C6 BB > 2%', c6, f"{bb_width}")]
+        c7_ok = (funding_rate is None) or (funding_rate < 0.10)
+        c8_ok = (fear_greed is None) or (fear_greed < 75)
+        conds = [
+            ('C1 DI+ > DI-', di_plus > di_minus, WEIGHTS['C1'], f"DI+={di_plus:.1f}"),
+            ('C2 MACD > 0', macd_h1 > 0, WEIGHTS['C2'], f"{macd_h1:.6f}"),
+            ('C3 RSI H4 > 50', rsi_h4 > 50, WEIGHTS['C3'], f"{rsi_h4}"),
+            ('C4 StochK < 80', stoch_k is not None and stoch_k < 80, WEIGHTS['C4'], f"{stoch_k}"),
+            ('C5 Close > EMA50', ema50 is not None and close > ema50, WEIGHTS['C5'], f"ema={ema50}"),
+            ('C6 BB Width > 2%', bb_width is not None and bb_width>2.0, WEIGHTS['C6'], f"{bb_width}"),
+            ('C7 Funding < 0.10', c7_ok, WEIGHTS['C7'], f"{funding_rate}"),
+            ('C8 F&G < 75', c8_ok, WEIGHTS['C8'], f"{fear_greed}"),
+        ]
     else:
-        c1 = di_minus > di_plus
-        c2 = macd_h1 < 0
-        c3 = rsi_h4 < 50
-        c4 = (stoch_k is not None and stoch_k > 20)
-        c5 = (ema50 is not None and close < ema50)
-        c6 = (bb_width is not None and bb_width > 2.0)
-        labels = [('C1 DI- > DI+', c1, f"{di_minus:.1f}"), ('C2 MACD < 0', c2, f"{macd_h1:.6f}"), ('C3 RSI H4 < 50', c3, f"{rsi_h4}"), ('C4 Stoch > 20', c4, f"{stoch_k}"), ('C5 Prix < EMA50', c5, f"{ema50}"), ('C6 BB > 2%', c6, f"{bb_width}")]
+        c7_ok = (funding_rate is None) or (funding_rate > -0.10)
+        c8_ok = (fear_greed is None) or (fear_greed > 25)
+        conds = [
+            ('C1 DI- > DI+', di_minus > di_plus, WEIGHTS['C1'], f"DI-={di_minus:.1f}"),
+            ('C2 MACD < 0', macd_h1 < 0, WEIGHTS['C2'], f"{macd_h1:.6f}"),
+            ('C3 RSI H4 < 50', rsi_h4 < 50, WEIGHTS['C3'], f"{rsi_h4}"),
+            ('C4 StochK > 20', stoch_k is not None and stoch_k > 20, WEIGHTS['C4'], f"{stoch_k}"),
+            ('C5 Close < EMA50', ema50 is not None and close < ema50, WEIGHTS['C5'], f"ema={ema50}"),
+            ('C6 BB Width > 2%', bb_width is not None and bb_width>2.0, WEIGHTS['C6'], f"{bb_width}"),
+            ('C7 Funding > -0.10', c7_ok, WEIGHTS['C7'], f"{funding_rate}"),
+            ('C8 F&G > 25', c8_ok, WEIGHTS['C8'], f"{fear_greed}"),
+        ]
 
-    score = sum([c1, c2, c3, c4, c5, c6])
-    detail = {name: f"[{'OK' if passed else 'FAIL'}] {val}" for name, passed, val in labels}
+    score_weighted = sum(w for _, ok, w, _ in conds if ok)
+    detail = {name: f"[{'OK' if ok else 'FAIL'}] w={w} | {val}" for name, ok, w, val in conds}
+
+    if adx_h1 > 28: threshold = SCORE_MAX * 0.50
+    elif adx_h1 >= 18: threshold = SCORE_MAX * 0.60
+    else: threshold = SCORE_MAX * 0.70
 
     sl_dist = atr * 1.5
     adx_ratio = 2.2 if adx_h1 >= 30 else (1.7 if adx_h1 >= 20 else 1.3)
     tp_dist = sl_dist * adx_ratio
-
     sl = round(close - sl_dist if direction == 'ACHAT' else close + sl_dist, 6)
     tp = round(close + tp_dist if direction == 'ACHAT' else close - tp_dist, 6)
 
-    return direction, score, detail, sl, tp
+    return direction, score_weighted, threshold, detail, sl, tp
 
-def log_score_detail(symbol, direction, score, detail, sl, tp, close):
+# =============================================================
+# LOG SCORE, IA & TELEGRAM
+# =============================================================
+
+def log_score_detail(symbol, direction, score_w, threshold, detail, sl, tp, close):
     if 'SKIP_BLOQUANT' in detail:
         log(f"  [SKIP] {detail['SKIP_BLOQUANT']}")
         return
-    log(f"  [SCORE] {direction} | {score}/6")
-    if score >= SCORE_MIN:
-        log(f"  [VALIDE] TP={tp:.6f} | SL={sl:.6f}")
+    log(f"  [SCORE] {direction} | {score_w:.1f}/{SCORE_MAX} | seuil={threshold:.2f}")
 
-# =============================================================
-# GEMINI ANALYSE
-# =============================================================
-
-def demander_analyse_ia(symbol, last, ema200, direction, score, sl, tp):
-    def fv(key, prec=2):
-        val = last.get(key)
-        try: return "N/A" if (val is None or str(val).lower() == 'nan') else f"{float(val):.{prec}f}"
-        except: return "N/A"
-
+def demander_analyse_ia(symbol, last, ema200, direction, score_w, threshold, sl, tp, funding_rate, fear_greed):
     close = float(last['close'])
-    prompt = f"Explique brievement pourquoi le signal {direction} ({score}/6) sur {symbol} est valide techniquement (MACD, RSI, EMA, ATR). 4 phrases max."
-
+    prompt = f"Analyse breve signal {direction} sur {symbol} score {score_w:.1f}/{SCORE_MAX}. 4 phrases."
     for key in GOOGLE_KEYS:
         if not key: continue
         try:
-            res = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{ACTIVE_MODEL}:generateContent?key={key}", 
-                               json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.2}}, timeout=25)
-            return res.json()['candidates'][0]['content']['parts'][0]['text'].strip()
+            r = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{ACTIVE_MODEL}:generateContent?key={key}", 
+                             json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.2}}, timeout=25)
+            return r.json()['candidates'][0]['content']['parts'][0]['text'].strip()
         except: pass
     return "Analyse IA indisponible."
 
-# =============================================================
-# TELEGRAM + BOUCLE
-# =============================================================
-
-def is_duplicate(symbol, direction, score):
-    h = hashlib.md5(f"{symbol}:{direction}:{score}".encode()).hexdigest()
+def is_duplicate(symbol, direction, score_w):
+    key = f"{symbol}:{direction}:{score_w:.1f}"
+    h   = hashlib.md5(key.encode()).hexdigest()
     if last_signal_hash.get(symbol) == h: return True
     last_signal_hash[symbol] = h
     return False
 
 def envoyer_telegram(msg):
-    try: requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=10)
-    except: pass
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: return False
+    try:
+        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                         json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=10)
+        return r.json().get('ok')
+    except: return False
+
+# =============================================================
+# BOUCLE PRINCIPALE
+# =============================================================
 
 CYCLE_WAIT, INTER_DELAY = 3600, 12
 log("Stabilisation Koyeb (60s)...")
 time.sleep(60)
+diagnostic_telegram()
 
 while True:
-    log(f"\nScan {datetime.now().strftime('%H:%M:%S')}")
+    log(f"\nATLAS v17.0 - Scan {datetime.now().strftime('%H:%M:%S')}")
+    fear_greed = get_fear_greed()
     sent = 0
+
     for s in SYMBOLS:
         last, ema200 = get_data(s)
-        if not last: continue
+        if last is None: continue
         
-        direction, score, detail, sl, tp = compute_score(last, ema200)
-        log_score_detail(s, direction, score, detail, sl, tp, float(last['close']))
+        funding_rate = get_funding_rate(s)
+        direction, score_w, threshold, detail, sl, tp = compute_score(last, ema200, funding_rate, fear_greed)
+        log_score_detail(s, direction, score_w, threshold, detail, sl, tp, float(last['close']))
 
-        if direction and score >= SCORE_MIN and not is_duplicate(s, direction, score):
-            analyse = demander_analyse_ia(s, last, ema200, direction, score, sl, tp)
+        if direction and score_w >= threshold and not is_duplicate(s, direction, score_w):
+            analyse = demander_analyse_ia(s, last, ema200, direction, score_w, threshold, sl, tp, funding_rate, fear_greed)
             emoji = "🟢" if direction == 'ACHAT' else "🔴"
-            msg = f"{emoji} *{s}* {emoji}\nScore: `{score}/6` | Prix: `{last['close']}`\nTP: `{tp}` | SL: `{sl}`\n\n{analyse}"
-            envoyer_telegram(msg)
-            sent += 1
+            msg = f"{emoji} *ATLAS v17.0 - {s}* {emoji}\nScore: `{score_w:.1f}/{SCORE_MAX}`\nTP: `{tp:.6f}` | SL: `{sl:.6f}`\n\n{analyse}"
+            if envoyer_telegram(msg): sent += 1
             time.sleep(INTER_DELAY)
     
     log(f"Cycle fini. Signaux: {sent}")
