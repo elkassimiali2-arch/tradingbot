@@ -15,11 +15,11 @@ import pandas as pd
 import pandas_ta as ta
 from binance.client import Client
 
-# --- 2. SERVEUR WEB HEALTH CHECK ---
+# --- 2. SERVEUR WEB ---
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200); self.send_header('Content-type', 'text/plain'); self.end_headers()
-        self.wfile.write(b"Atlas v14.6 Audit-Fixed Online")
+        self.wfile.write(b"Atlas v14.7 ATR-Fixed Online")
     def log_message(self, format, *args): return
 
 def run_web_server():
@@ -41,7 +41,7 @@ SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "AVAXUSDT", "XRPUSDT", "NEARUSDT"]
 ACTIVE_MODEL = "gemini-2.5-flash"
 last_signal_hash = {}
 
-# --- 4. DATA ENGINE (FIXED) ---
+# --- 4. DATA ENGINE (ROBUSTE) ---
 def get_data(symbol):
     try:
         raw_h1 = client_binance.get_historical_klines(symbol, Client.KLINE_INTERVAL_1HOUR, "200 hours ago UTC")
@@ -55,18 +55,20 @@ def get_data(symbol):
             
         df_h1, df_h4, df_d1 = to_df(raw_h1), to_df(raw_h4), to_df(raw_d1)
         
-        # Indicateurs H1 (Avec ATR et BB Middle)
+        # Indicateurs H1
         df_h1.ta.rsi(append=True)
         df_h1.ta.macd(append=True)
         df_h1.ta.adx(append=True)
         df_h1.ta.bbands(append=True)
-        df_h1.ta.atr(append=True) # AJOUT ATR
+        
+        # ATR avec récupération dynamique du nom de colonne
+        atr_df = df_h1.ta.atr(length=14, append=True)
+        atr_col = atr_df.name if hasattr(atr_df, 'name') else 'ATR_14'
         
         vol_ma20 = df_h1['vol'].rolling(20).mean().iloc[-1]
         vol_ratio = df_h1['vol'].iloc[-1] / vol_ma20 if vol_ma20 > 0 else 1.0
         
-        # Contexte H4 & D1
-        rsi_h4 = df_h4.ta.rsi().iloc[-1] # AJOUT RSI H4
+        rsi_h4 = df_h4.ta.rsi().iloc[-1]
         ema_series = df_d1.ta.ema(length=200)
         ema200 = float(ema_series.iloc[-1]) if (ema_series is not None and not ema_series.empty) else None
         
@@ -79,13 +81,13 @@ def get_data(symbol):
             'vol_ratio': round(vol_ratio, 2), 
             'rsi_h4': rsi_h4, 
             'p_r1': r1, 'p_s1': s1,
-            'atr_h1': df_h1['ATR_14'].iloc[-1] # AJOUT ATR DANS DICT
+            'atr_val': df_h1[atr_col].iloc[-1] # On utilise le nom dynamique
         })
         return res, ema200
     except Exception as e:
         print(f"  ❌ Erreur Data {symbol}: {e}"); return None, None
 
-# --- 5. EXPERT IA (PROMPT OPTIMISÉ) ---
+# --- 5. EXPERT IA ---
 def demander_ia_expert(symbol, last, ema200):
     def fv(key, prec=2):
         val = last.get(key)
@@ -93,10 +95,10 @@ def demander_ia_expert(symbol, last, ema200):
         except: return "N/A"
     
     ema_txt = f"{ema200:.2f}" if ema200 is not None else "N/A"
-    atr = float(last.get('atr_h1', 0))
+    atr = float(last.get('atr_val', 0))
     
     prompt = f"""Expert Trader H1. Analyse {symbol} à {last['close']:.2f}$.
-    STATS H1: RSI {fv('RSI_14', 1)}, ADX {fv('ADX_14', 1)}, Vol x{fv('vol_ratio')}, ATR {fv('atr_h1')}.
+    STATS H1: RSI {fv('RSI_14', 1)}, ADX {fv('ADX_14', 1)}, Vol x{fv('vol_ratio')}, ATR {atr:.2f}.
     BOLLINGER H1: Low {fv('BBL_20_2.0')}, Mid {fv('BBM_20_2.0')}, High {fv('BBU_20_2.0')}.
     CONTEXTE: RSI H4 {fv('rsi_h4', 1)}, EMA200 D1 {ema_txt}, Pivot R1 {fv('p_r1')}, S1 {fv('p_s1')}.
     
@@ -121,19 +123,19 @@ def demander_ia_expert(symbol, last, ema200):
         except: pass
     return "SIGNAL: ATTENTE (Quotas)"
 
-# --- 6. MAIN LOOP (SYNC 1H) ---
+# --- 6. MAIN LOOP ---
 print("⏳ Stabilisation Koyeb (60s)...")
 time.sleep(60)
 
 while True:
     now_str = datetime.now().strftime('%H:%M:%S')
-    print(f"\n🚀 SCAN ATLAS v14.6 - {now_str}")
+    print(f"\n🚀 SCAN ATLAS v14.7 - {now_str}")
     signals_sent = 0
     
     for s in SYMBOLS:
         print(f"🔍 {s}..."); last, ema200 = get_data(s)
         if last is None: continue
-        if float(last.get('vol_ratio', 1.0)) < 0.5: continue # Seuil vol ajusté
+        if float(last.get('vol_ratio', 1.0)) < 0.5: continue
             
         verdict = demander_ia_expert(s, last, ema200)
         print(f"  🤖 Verdict :\n{verdict}\n")
@@ -155,4 +157,4 @@ while True:
     except: pass
     
     print(f"✅ {done_msg.replace('*','')}")
-    time.sleep(3600) # Synchronisé sur 1 heure (3600s)
+    time.sleep(3600)
