@@ -380,7 +380,7 @@ def demander_analyse_ia(symbol, last, ema200, direction, score_w, sl, tp, fundin
         f"RSI H1={fv('RSI_14',1)} MACD={fv('MACDh_12_26_9',6)} ADX={fv('ADX_14',1)} "
         f"StochK={fv('stoch_k',1)} EMA50={fv('ema50_h1',4)} RSI H4={fv('rsi_h4',1)} "
         f"Funding={f'{funding_rate:.4f}' if funding_rate is not None else 'N/A'} F&G={fear_greed}. "
-        f"Redige une analyse de 4 phrases courtes : pourquoi ce signal est valide, "
+        f"Redige une analyse en 3 bullet point court : pourquoi ce signal est valide, "
         f"role du sentiment, risque principal d invalidation."
     )
 
