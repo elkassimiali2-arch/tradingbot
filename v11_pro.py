@@ -208,17 +208,17 @@ def get_data(symbol):
         bbu_col = next((c for c in df_h1.columns if c.startswith('BBU_')), None)
         bbl_col = next((c for c in df_h1.columns if c.startswith('BBL_')), None)
         bbm_col = next((c for c in df_h1.columns if c.startswith('BBM_')), None)
-        bbu = float(df_h1[bbu_col].iloc[-1]) if bbu_col else None
-        bbl = float(df_h1[bbl_col].iloc[-1]) if bbl_col else None
-        bbm = float(df_h1[bbm_col].iloc[-1]) if bbm_col else None
+        bbu = float(df_h1[bbu_col].iloc[-2]) if bbu_col else None
+        bbl = float(df_h1[bbl_col].iloc[-2]) if bbl_col else None
+        bbm = float(df_h1[bbm_col].iloc[-2]) if bbm_col else None
         bb_width = round(((bbu-bbl)/bbm)*100, 4) if (
             bbu and bbl and bbm and bbm > 0) else None
 
         stoch_k_col = next((c for c in df_h1.columns if 'STOCHRSIk' in c), None)
-        stoch_k = float(df_h1[stoch_k_col].iloc[-1]) if stoch_k_col else None
+        stoch_k = float(df_h1[stoch_k_col].iloc[-2]) if stoch_k_col else None
 
-        vol_abs   = float(df_h1['vol'].iloc[-1])
-        vol_ma20  = df_h1['vol'].rolling(20).mean().iloc[-1]
+        vol_abs   = float(df_h1["vol"].iloc[-2])
+        vol_ma20  = df_h1["vol"].iloc[-21:-1].mean()
         vol_ratio = vol_abs / vol_ma20 if vol_ma20 > 0 else 1.0
 
         df_h4.ta.rsi(length=14, append=True)
@@ -236,7 +236,7 @@ def get_data(symbol):
         pc = df_d1['close'].iloc[-2]
         pivot = (ph + pl + pc) / 3
 
-        res = df_h1.iloc[-1].to_dict()
+        res = df_h1.iloc[-2].to_dict()
         res.update({
             'atr_val':   atr_val,
             'vol_ratio': round(vol_ratio, 2),
@@ -513,6 +513,7 @@ while True:
             import traceback; traceback.print_exc()
             continue
 
+    # FIN DE CYCLE
     now_end  = datetime.now().strftime('%H:%M')
     done_msg = (
         f"🏁 *Cycle termine* ({now_end})\n"
