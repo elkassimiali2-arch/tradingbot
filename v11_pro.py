@@ -493,7 +493,7 @@ while True:
             msg = (
                 f"{emoji} *ATLAS v17.1 - {s}* {emoji}\n"
                 f"💰 Prix : `{close:.6f} $`\n"
-                f"📊 Score : `[{bar}] {score_w:.1f}/{SCORE_MAX} ({pct}%)`\n"
+                f"📊 Score : ` {score_w:.1f}/{SCORE_MAX} ({pct}%)`\n"
                 f"🎯 TP : `{tp:.6f}` | SL : `{sl:.6f}`\n"
                 f"⚖️ Ratio G/R : `{ratio_gr}`\n"
                 f"{vol_icon} Vol : `x{vol_r:.2f}` | ATR : `{atr_v:.4f}`\n"
