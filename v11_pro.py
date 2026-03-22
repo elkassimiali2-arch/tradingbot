@@ -278,9 +278,11 @@ def compute_score(last, ema200, funding_rate, fear_greed):
     atr       = float(last.get('atr_val', 0))
 
     if vol_ratio < 0.7:
-        return None, 0.0, 0.0, {'SKIP_BLOQUANT': f"Volume faible x{vol_ratio:.2f} (< 0.70)"}, None, None
+        return None, 0.0, 0.0, {
+            'SKIP_BLOQUANT': f"Volume faible x{vol_ratio:.2f} (< 0.70)"}, None, None
     if adx_h1 < 15:
-        return None, 0.0, 0.0, {'SKIP_BLOQUANT': f"ADX trop faible {adx_h1:.1f} (< 15)"}, None, None
+        return None, 0.0, 0.0, {
+            'SKIP_BLOQUANT': f"ADX trop faible {adx_h1:.1f} (< 15)"}, None, None
 
     if di_plus > di_minus:       direction = 'ACHAT'
     elif di_minus > di_plus:     direction = 'VENTE'
@@ -289,7 +291,8 @@ def compute_score(last, ema200, funding_rate, fear_greed):
     h4_ok = (direction=='ACHAT' and rsi_h4>50) or (direction=='VENTE' and rsi_h4<50)
     if not h4_ok:
         need = "> 50" if direction=='ACHAT' else "< 50"
-        return None, 0.0, 0.0, {'SKIP_BLOQUANT': f"H4 non confirme RSI H4={rsi_h4:.1f} (besoin {need})"}, None, None
+        return None, 0.0, 0.0, {
+            'SKIP_BLOQUANT': f"H4 non confirme RSI H4={rsi_h4:.1f} (besoin {need})"}, None, None
 
     if direction == 'ACHAT':
         c7_ok = (funding_rate is None) or (funding_rate < 0.10)
@@ -344,7 +347,8 @@ def log_score_detail(symbol, direction, score_w, threshold, detail, sl, tp, clos
     pct = round(score_w / SCORE_MAX * 100, 1)
     regime = "TENDANCE FORTE" if threshold == SCORE_MAX*0.50 else \
              ("TENDANCE MOD." if threshold == SCORE_MAX*0.60 else "RANGE")
-    log(f"  [SCORE] {direction} | {score_w:.1f}/{SCORE_MAX} ({pct}%) | seuil={threshold:.2f} | regime={regime}")
+    log(f"  [SCORE] {direction} | {score_w:.1f}/{SCORE_MAX} ({pct}%) | "
+        f"seuil={threshold:.2f} | regime={regime}")
     for name, result in detail.items():
         icon = 'v' if '[OK]' in result else 'x'
         val  = result.replace('[OK] ','').replace('[FAIL] ','')
@@ -375,7 +379,7 @@ def demander_analyse_ia(symbol, last, ema200, direction, score_w, sl, tp, fundin
         f"Score {score_w:.1f}/{SCORE_MAX}. TP={tp:.6f} SL={sl:.6f} Ratio={ratio}. "
         f"RSI H1={fv('RSI_14',1)} MACD={fv('MACDh_12_26_9',6)} ADX={fv('ADX_14',1)} "
         f"StochK={fv('stoch_k',1)} EMA50={fv('ema50_h1',4)} RSI H4={fv('rsi_h4',1)} "
-        f"Funding={funding_rate:.4f if funding_rate else 'N/A'} F&G={fear_greed}. "
+        f"Funding={f'{funding_rate:.4f}' if funding_rate is not None else 'N/A'} F&G={fear_greed}. "
         f"Redige une analyse de 4 phrases : pourquoi ce signal est valide, "
         f"role du sentiment, risque principal d invalidation."
     )
@@ -393,6 +397,7 @@ def demander_analyse_ia(symbol, last, ema200, direction, score_w, sl, tp, fundin
             data = r.json()
             if 'candidates' in data:
                 return data['candidates'][0]['content']['parts'][0]['text'].strip()
+            log(f"    [IA] Reponse inattendue : {data}")
         except Exception as e:
             log(f"    [IA ERROR] {e}")
     return "Analyse IA indisponible."
@@ -505,8 +510,10 @@ while True:
 
         except Exception as e:
             log(f"  [ERREUR INATTENDUE] {s}: {e}")
+            import traceback; traceback.print_exc()
             continue
 
+    # FIN DE CYCLE - message Telegram TOUJOURS envoye
     now_end  = datetime.now().strftime('%H:%M')
     done_msg = (
         f"🏁 *Cycle termine* ({now_end})\n"
