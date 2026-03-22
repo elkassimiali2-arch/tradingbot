@@ -1,7 +1,7 @@
 import sys
 from types import ModuleType
 
-# --- 1. CORRECTIF PYTHON 3.14 (MOCK NUMBA) ---
+# --- 1. CORRECTIF PYTHON 3.14 ---
 if 'numba' not in sys.modules:
     m = ModuleType('numba')
     m.njit = lambda f=None, *a, **k: (lambda x: x) if f is None else f
@@ -12,25 +12,24 @@ from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
 import pandas as pd
-import numpy as np
 import pandas_ta as ta
 from binance.client import Client
 
 # =============================================================
-# SERVEUR WEB (Health Check)
+# SERVEUR WEB & LOGGING
 # =============================================================
+def log(msg):
+    print(msg, flush=True)
+
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-type', 'text/plain')
-        self.end_headers()
-        self.wfile.write(b"Atlas v15.2 Online")
+        self.send_response(200); self.send_header('Content-type', 'text/plain'); self.end_headers()
+        self.wfile.write(b"Atlas v15.3 Full-Log Online")
     def log_message(self, format, *args): return
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8000))
-    server = HTTPServer(('0.0.0.0', port), SimpleHandler)
-    server.serve_forever()
+    HTTPServer(('0.0.0.0', port), SimpleHandler).serve_forever()
 
 threading.Thread(target=run_web_server, daemon=True).start()
 
@@ -43,13 +42,10 @@ GOOGLE_KEYS      = [os.getenv('GOOGLE_API_KEY'), os.getenv('GOOGLE_API_KEY_2')]
 TELEGRAM_TOKEN   = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
-client_binance = Client(BINANCE_KEY, "")
-
-# Liste mise à jour : Ajout de AVAXUSDT
-SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "AVAXUSDT", "BNBUSDT", "DOGEUSDT", "LINKUSDT"]
-
+client_binance   = Client(BINANCE_KEY, "")
+SYMBOLS          = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT", "LINKUSDT", "AVAXUSDT"]
 ACTIVE_MODEL     = "gemini-2.5-flash"
-CONFIDENCE_MIN   = 75    
+CONFIDENCE_MIN   = 75
 last_signal_hash = {}
 
 # =============================================================
@@ -58,122 +54,98 @@ last_signal_hash = {}
 def get_data(symbol):
     try:
         cols = ['time','open','high','low','close','vol','ct','q_av','tr','tb','tq','ig']
-
         def to_df(raw):
             df = pd.DataFrame(raw, columns=cols)
-            for c in ['open','high','low','close','vol']:
-                df[c] = pd.to_numeric(df[c])
+            for c in ['open','high','low','close','vol']: df[c] = pd.to_numeric(df[c])
             return df.copy()
 
+        log(f"    -> Collecte données {symbol}...")
         raw_h1 = client_binance.get_historical_klines(symbol, Client.KLINE_INTERVAL_1HOUR, "220 hours ago UTC")
         raw_h4 = client_binance.get_historical_klines(symbol, Client.KLINE_INTERVAL_4HOUR, "120 days ago UTC")
         raw_d1 = client_binance.get_historical_klines(symbol, Client.KLINE_INTERVAL_1DAY, "400 days ago UTC")
 
-        df_h1 = to_df(raw_h1)
-        df_h4 = to_df(raw_h4)
-        df_d1 = to_df(raw_d1)
+        df_h1, df_h4, df_d1 = to_df(raw_h1), to_df(raw_h4), to_df(raw_d1)
 
-        # --- Indicateurs H1 ---
         df_h1.ta.rsi(length=14, append=True)
-        df_h1.ta.macd(fast=12, slow=26, signal=9, append=True)
-        df_h1.ta.adx(length=14, append=True)
-        df_h1.ta.bbands(length=20, std=2, append=True)
+        df_h1.ta.macd(append=True)
+        df_h1.ta.adx(append=True)
+        df_h1.ta.bbands(append=True)
         df_h1.ta.atr(length=14, append=True)
-        
-        atr_val = float(df_h1['ATRr_14'].iloc[-1]) if 'ATRr_14' in df_h1.columns else \
-                  float(df_h1['ATR_14'].iloc[-1])  if 'ATR_14'  in df_h1.columns else 0.0
 
-        vol_ma20  = df_h1['vol'].rolling(20).mean().iloc[-1]
+        atr_col = next((c for c in ['ATRr_14', 'ATR_14'] if c in df_h1.columns), None)
+        atr_val = float(df_h1[atr_col].iloc[-1]) if atr_col else 0.0
+
+        vol_ma20 = df_h1['vol'].rolling(20).mean().iloc[-1]
         vol_ratio = df_h1['vol'].iloc[-1] / vol_ma20 if vol_ma20 > 0 else 1.0
 
-        # --- Indicateurs H4 ---
         df_h4.ta.rsi(length=14, append=True)
         df_h4.ta.adx(length=14, append=True)
-        df_h4.ta.macd(fast=12, slow=26, signal=9, append=True)
-        rsi_h4  = float(df_h4['RSI_14'].iloc[-1])
-        adx_h4  = float(df_h4['ADX_14'].iloc[-1])
-        macd_h4 = float(df_h4['MACDh_12_26_9'].iloc[-1])
-
-        # --- EMA200 D1 ---
+        df_h4.ta.macd(append=True)
+        
         ema_series = df_d1.ta.ema(length=200)
         ema200 = float(ema_series.iloc[-1]) if (ema_series is not None and not ema_series.empty) else None
 
-        # --- Pivot J-1 ---
+        # Pivots
         ph, pl, pc = df_d1['high'].iloc[-2], df_d1['low'].iloc[-2], df_d1['close'].iloc[-2]
         pivot = (ph + pl + pc) / 3
+
         res = df_h1.iloc[-1].to_dict()
         res.update({
             'atr_val': atr_val, 'vol_ratio': round(vol_ratio, 2),
-            'rsi_h4': round(rsi_h4, 1), 'adx_h4': round(adx_h4, 1), 'macd_h4': round(macd_h4, 6),
-            'p_r1': round((2 * pivot) - pl, 6), 'p_r2': round(pivot + (ph - pl), 6),
-            'p_s1': round((2 * pivot) - ph, 6), 'p_s2': round(pivot - (ph - pl), 6)
+            'rsi_h4': round(df_h4['RSI_14'].iloc[-1], 1),
+            'adx_h4': round(df_h4['ADX_14'].iloc[-1], 1),
+            'macd_h4': round(df_h4['MACDh_12_26_9'].iloc[-1], 6),
+            'p_r1': round((2*pivot)-pl, 6), 'p_r2': round(pivot+(ph-pl), 6),
+            'p_s1': round((2*pivot)-ph, 6), 'p_s2': round(pivot-(ph-pl), 6)
         })
+        log(f"    -> RSI H1={res['RSI_14']:.1f} | ATR={atr_val:.4f} | Vol=x{vol_ratio:.2f}")
         return res, ema200
     except Exception as e:
-        print(f"  [DATA ERROR] {symbol}: {e}"); return None, None
+        log(f"    [DATA ERROR] {symbol}: {e}"); return None, None
 
 # =============================================================
-# PRE-FILTRE QUANTITATIF
+# PRE-FILTRE & IA
 # =============================================================
 def pre_filter(last):
-    vol_ratio = float(last.get('vol_ratio', 1.0))
-    adx_h1    = float(last.get('ADX_14', 0))
-    rsi_h1    = float(last.get('RSI_14', 50))
+    vr, adx, rsi = float(last.get('vol_ratio', 1.0)), float(last.get('ADX_14', 0)), float(last.get('RSI_14', 50))
+    log(f"    -> Check: Vol=x{vr} | ADX={adx:.1f} | RSI={rsi:.1f}")
+    if vr < 0.7: return False, f"Vol faible (x{vr})"
+    if adx < 18 and 42 < rsi < 58: return False, f"Range plat"
+    return True, "Setup Valide"
 
-    if vol_ratio < 0.7:
-        return False, f"Volume faible (x{vol_ratio:.2f})"
-    if adx_h1 < 18 and 42 < rsi_h1 < 58:
-        return False, f"Range plat (ADX={adx_h1:.1f}, RSI={rsi_h1:.1f})"
-    return True, f"Setup valide (ADX={adx_h1:.1f}, Vol=x{vol_ratio:.2f})"
-
-# =============================================================
-# PROMPT IA
-# =============================================================
 def demander_ia_expert(symbol, last, ema200):
     def fv(key, prec=2):
         val = last.get(key)
         try: return "N/A" if (val is None or str(val).lower() == 'nan') else f"{float(val):.{prec}f}"
         except: return "N/A"
 
-    close, atr, adx_h1 = float(last['close']), float(last.get('atr_val', 0)), float(last.get('ADX_14', 0))
-    ema_txt = f"{ema200:.4f}" if ema200 is not None else "N/A"
-    above_ema = "AU-DESSUS" if (ema200 and close > ema200) else "EN-DESSOUS"
+    close, atr = float(last['close']), float(last.get('atr_val', 0))
     sl_min = round(atr * 1.5, 6)
-    ratio_cible = "2.0 a 2.5" if adx_h1 >= 30 else ("1.5 a 2.0" if adx_h1 >= 20 else "1.2 a 1.5")
-
-    prompt = f"""Tu es un trader quantitatif crypto visant des signaux haute probabilite uniquement.
-Analyse {symbol} a {close:.6f} $.
-
-=== DONNEES MULTI-TIMEFRAME ===
-H1: RSI {fv('RSI_14', 1)} | MACD Hist {fv('MACDh_12_26_9', 6)} | ADX {fv('ADX_14', 1)} | ATR {atr:.6f} | Vol x{fv('vol_ratio')}
-H4: RSI {fv('rsi_h4', 1)} | ADX {fv('adx_h4', 1)} | MACD Hist {fv('macd_h4', 6)}
-D1: EMA 200 {ema_txt} ({above_ema}) | Pivot R2 {fv('p_r2', 6)} | S2 {fv('p_s2', 6)}
-
-=== REGLES STRICTES ===
-1. SL MINIMUM = {sl_min:.6f} (1.5 x ATR). 
-2. Ratio Risk/Reward : {ratio_cible}.
-3. ACHAT : DI+ > DI-, MACD Histo H1 croissant, RSI H4 > 50.
-4. VENTE : DI- > DI+, MACD Histo H1 decroissant, RSI H4 < 50.
-5. TAILLE : confiance >= 75% -> 5% cap | 60-74% -> 3% | < 60% -> ATTENTE.
-
-=== FORMAT (STRICT) ===
-SIGNAL    : [ ACHAT | VENTE | ATTENTE ]
-CONFIANCE : X%
-TP        : X.XXXXXX
-SL        : X.XXXXXX
-RATIO G/R : X.X
-TAILLE    : X% du capital
-H4 STATUS : [ CONFIRME | MIXTE ]
-ANALYSE   : (4 phrases précises)"""
+    
+    prompt = f"""Expert Trader H1. Analyse {symbol} à {close:.6f}$.
+    DATA: RSI {fv('RSI_14', 1)} | ADX {fv('ADX_14', 1)} | MACD {fv('MACDh_12_26_9', 6)} | ATR {atr:.6f} | Vol x{fv('vol_ratio')}
+    H4: RSI {fv('rsi_h4', 1)} | ADX {fv('adx_h4', 1)} | MACD {fv('macd_h4', 6)}
+    D1: EMA200 {fv('ema200', 4)} | R2 {fv('p_r2', 6)} | S2 {fv('p_s2', 6)}
+    
+    REGLES: SL MIN = {sl_min:.6f}. Ratio G/R selon ADX. 
+    ACHAT: DI+ > DI- & MACD UP & RSI H4 > 50. 
+    VENTE: DI- > DI+ & MACD DOWN & RSI H4 < 50.
+    
+    FORMAT:
+    SIGNAL    : [ ACHAT | VENTE | ATTENTE ]
+    CONFIANCE : X%
+    TP : X.XXXXXX | SL : X.XXXXXX
+    ANALYSE : (4 phrases techniques)"""
 
     for key in GOOGLE_KEYS:
         if not key: continue
         try:
-            res = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{ACTIVE_MODEL}:generateContent?key={key}",
+            log(f"    -> Appel Gemini...")
+            res = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{ACTIVE_MODEL}:generateContent?key={key}", 
                 json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.1}}, timeout=25)
             return res.json()['candidates'][0]['content']['parts'][0]['text']
         except: pass
-    return "SIGNAL : ATTENTE\nCONFIANCE : 0%\nANALYSE : Quotas IA epuises."
+    return "SIGNAL : ATTENTE\nCONFIANCE : 0%\nANALYSE : Quotas epuises."
 
 # =============================================================
 # UTILITAIRES & BOUCLE
@@ -185,7 +157,7 @@ def extract_signal(v):
 def extract_confidence(v):
     for line in v.split('\n'):
         if 'CONFIANCE' in line.upper():
-            try: return int(''.join(filter(str.isdigit, line)))
+            try: return int(''.join(filter(str.isdigit, line))[:3])
             except: pass
     return 0
 
@@ -196,34 +168,35 @@ def is_duplicate(symbol, verdict):
     return False
 
 def envoyer_telegram(msg):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: return
-    try: requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+    try: requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", 
         json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=10)
-    except Exception as e: print(f"  [TG ERROR] {e}")
+    except: log("  [TELEGRAM ERROR]")
 
-print("Stabilisation Koyeb (60s)...")
+log("Stabilisation Koyeb (60s)...")
 time.sleep(60)
 
 while True:
-    print(f"\n{'='*30}\nATLAS v15.2 - Scan {datetime.now().strftime('%H:%M:%S')}\n{'='*30}")
+    log(f"\n{'='*52}\nATLAS v15.3 - Scan {datetime.now().strftime('%H:%M:%S')}\n{'='*52}")
     sent, filtered = 0, 0
     for s in SYMBOLS:
+        log(f"\n[{s}] --- Analyse ---")
         last, ema200 = get_data(s)
         if not last: continue
-        ok, reason = pre_filter(last)
-        if not ok: continue
         
+        ok, reason = pre_filter(last)
+        if not ok: log(f"  [SKIP] {reason}"); continue
+            
         verdict = demander_ia_expert(s, last, ema200)
         sig, conf = extract_signal(verdict), extract_confidence(verdict)
-        
+        log(f"  [RESULTAT] {sig} ({conf}%)")
+        log(f"  [VERDICT BRUT]: {verdict[:100]}...")
+
         if sig == 'ATTENTE' or conf < CONFIDENCE_MIN or is_duplicate(s, verdict):
             if conf < CONFIDENCE_MIN and sig != 'ATTENTE': filtered += 1
             continue
 
-        emoji = "🟢" if sig == 'ACHAT' else "🔴"
-        msg = f"{emoji} *ATLAS v15.2 - {s}*\n💰 Prix : `{last['close']:.6f} $` | Conf : *{conf}%*\n```\n{verdict}\n```"
-        envoyer_telegram(msg)
-        sent += 1; time.sleep(12)
+        msg = f"🟢 *{s}* (Conf: {conf}%)\n💰 Prix: `{last['close']:.6f}`\n```\n{verdict}\n```"
+        envoyer_telegram(msg); sent += 1; time.sleep(12)
 
-    done_msg = f"🏁 *Cycle termine* - Signaux: *{sent}/{len(SYMBOLS)}* | Filtres: {filtered}"
-    envoyer_telegram(done_msg); print(f"\n{done_msg}"); time.sleep(3600)
+    done_msg = f"🏁 *Cycle terminé* - Signaux: {sent}/{len(SYMBOLS)} | Filtres: {filtered}"
+    envoyer_telegram(done_msg); log(f"\n{done_msg}"); time.sleep(3600)
