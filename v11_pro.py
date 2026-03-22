@@ -452,7 +452,7 @@ while True:
                 continue
 
             funding_rate = get_funding_rate(s)
-            log(f"  Funding : {funding_rate:.6f if funding_rate is not None else 'N/A'}")
+            log(f"  Funding : {f'{funding_rate:.6f}' if funding_rate is not None else 'N/A'}")
 
             close = float(last.get('close', 0))
             direction, score_w, threshold, detail, sl, tp = compute_score(
@@ -513,7 +513,6 @@ while True:
             import traceback; traceback.print_exc()
             continue
 
-    # FIN DE CYCLE - message Telegram TOUJOURS envoye
     now_end  = datetime.now().strftime('%H:%M')
     done_msg = (
         f"🏁 *Cycle termine* ({now_end})\n"
