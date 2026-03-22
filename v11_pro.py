@@ -516,7 +516,7 @@ while True:
         f"🏁 *Cycle termine* ({now_end})\n"
         f"Signaux envoyes : *{sent}/{len(SYMBOLS)}*\n"
         f"Score insuffisant : {low_score} | Skips : {skipped}\n"
-        f"Prochain scan dans 180 min."
+        f"Prochain scan dans 150 min."
     )
     log(f"\n{done_msg.replace('*','')}")
     envoyer_telegram(done_msg)
