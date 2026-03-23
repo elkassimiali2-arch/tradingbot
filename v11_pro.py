@@ -6,7 +6,7 @@ if 'numba' not in sys.modules:
     m.njit = lambda f=None, *a, **k: (lambda x: x) if f is None else f
     sys.modules['numba'] = m
 
-import threading, hashlib, os, time, requests
+import threading, hashlib, os, time, requests, json
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
@@ -46,9 +46,106 @@ TELEGRAM_TOKEN   = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
 client_binance   = Client(BINANCE_KEY, "")
-SYMBOLS          = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT", "LINKUSDT", "AVAXUSDT"]
+SYMBOLS          = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "LINKUSDT", "AVAXUSDT"]
 ACTIVE_MODEL     = "gemini-2.5-flash"
 last_signal_hash = {}
+
+# =============================================================
+# TRACKER WIN RATE - stockage JSON + verification auto
+# =============================================================
+
+import pathlib
+
+TRACKER_FILE = "/tmp/atlas_signals.json"
+
+def load_tracker():
+    try:
+        if pathlib.Path(TRACKER_FILE).exists():
+            with open(TRACKER_FILE, "r") as f:
+                return json.load(f)
+    except: pass
+    return {"signals": [], "stats": {"wins": 0, "losses": 0, "open": 0}}
+
+def save_tracker(data):
+    try:
+        with open(TRACKER_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        log(f"  [TRACKER] Save error: {e}")
+
+def add_signal(symbol, direction, entry, tp, sl, timeframe):
+    data = load_tracker()
+    sig  = {
+        "id":        f"{symbol}*{timeframe}*{int(time.time())}",
+        "symbol":    symbol,
+        "direction": direction,
+        "entry":     entry,
+        "tp":        tp,
+        "sl":        sl,
+        "timeframe": timeframe,
+        "ts":        datetime.now().strftime("%d/%m %H:%M"),
+        "result":    "OPEN",
+    }
+    data["signals"].append(sig)
+    data["stats"]["open"] += 1
+    save_tracker(data)
+    log(f"  [TRACKER] Signal enregistre : {symbol} {direction} {timeframe}")
+
+def check_open_signals():
+    """Verifie si les signaux ouverts ont atteint TP ou SL."""
+    data  = load_tracker()
+    open_sigs = [s for s in data["signals"] if s["result"] == "OPEN"]
+    if not open_sigs:
+        return
+
+    log(f"  [TRACKER] Verification de {len(open_sigs)} signal(s) ouvert(s)...")
+    changed = False
+
+    for sig in open_sigs:
+        try:
+            ticker = client_binance.get_symbol_ticker(symbol=sig["symbol"])
+            current = float(ticker["price"])
+            entry, tp, sl = sig["entry"], sig["tp"], sig["sl"]
+            direction = sig["direction"]
+
+            hit_tp = (direction == "ACHAT" and current >= tp) or (direction == "VENTE" and current <= tp)
+            hit_sl = (direction == "ACHAT" and current <= sl) or (direction == "VENTE" and current >= sl)
+
+            if hit_tp:
+                sig["result"]  = "WIN"
+                sig["exit"]    = current
+                data["stats"]["wins"]  += 1
+                data["stats"]["open"]  -= 1
+                changed = True
+                log(f"  [TRACKER] WIN: {sig['symbol']} {direction} ({sig['timeframe']})")
+                envoyer_telegram(
+                    f"✅ *WIN* | {sig['symbol']} {direction} ({sig['timeframe']})\nEntree: `{fmt_price(entry)}` TP atteint: `{fmt_price(current)}`"
+                )
+            elif hit_sl:
+                sig["result"]  = "LOSS"
+                sig["exit"]    = current
+                data["stats"]["losses"] += 1
+                data["stats"]["open"]   -= 1
+                changed = True
+                log(f"  [TRACKER] LOSS: {sig['symbol']} {direction} ({sig['timeframe']})")
+                envoyer_telegram(
+                    f"❌ *LOSS* | {sig['symbol']} {direction} ({sig['timeframe']})\nEntree: `{fmt_price(entry)}` SL touche: `{fmt_price(current)}`"
+                )
+        except Exception as e:
+            log(f"  [TRACKER] Erreur check {sig.get('symbol')}: {e}")
+
+    if changed:
+        save_tracker(data)
+
+def get_winrate_summary():
+    data   = load_tracker()
+    stats  = data["stats"]
+    wins   = stats.get("wins", 0)
+    losses = stats.get("losses", 0)
+    open_s = stats.get("open", 0)
+    total  = wins + losses
+    wr     = round(wins / total * 100, 1) if total > 0 else 0
+    return wins, losses, open_s, wr
 
 # Score H1 (court terme)
 WEIGHTS = {
@@ -68,6 +165,18 @@ WEIGHTS_LT = {
     'L6': 1.0,  # ADX D1 > 20
 }
 SCORE_MAX_LT = sum(WEIGHTS_LT.values())  # 10.0
+
+# Decimales adaptatives selon le prix
+def get_decimals(price):
+    if price >= 1000:  return 1   # BTC, BNB
+    if price >= 100:   return 2   # ETH, SOL
+    if price >= 1:     return 3   # LINK, AVAX
+    if price >= 0.01:  return 4   # tokens < 1$
+    return 6                       # micro-prix
+
+def fmt_price(price):
+    d = get_decimals(price)
+    return f"{price:.{d}f}"
 
 # Taille position selon score (% portefeuille)
 def get_position_size(score_w, score_max):
@@ -407,7 +516,6 @@ def compute_score_lt(last, ema200):
     detail   = {n: f"[{'OK' if ok else 'FAIL'}] {v}" for n,ok,w,v in conds}
     threshold = SCORE_MAX_LT * 0.60  # 6/10 minimum pour long terme
 
-    # TP/SL sur base ATR D1 (horizon 3-4 jours = 3x ATR D1)
     sl_dist = atr_d1 * 1.5
     tp_dist = atr_d1 * 3.5
     sl = round(close - sl_dist if direction=='ACHAT' else close + sl_dist, 4)
@@ -441,7 +549,7 @@ def log_score_detail(label, direction, score_w, score_max, threshold, detail, sl
 # =============================================================
 
 def demander_analyse_ia(symbol, last, direction_ct, direction_lt, score_ct, score_lt,
-                        sl_ct, tp_ct, sl_lt, tp_lt, funding_rate, fear_greed):
+                      sl_ct, tp_ct, sl_lt, tp_lt, funding_rate, fear_greed):
     close = float(last['close'])
 
     def fv(key, prec=2):
@@ -496,15 +604,14 @@ def is_duplicate(symbol, direction_ct, score_ct):
 # =============================================================
 
 def build_telegram_msg(symbol, close, direction_ct, score_ct,
-                        sl_ct, tp_ct, ratio_ct, size_ct,
-                        direction_lt, score_lt, sl_lt, tp_lt, ratio_lt, size_lt,
-                        fear_greed, funding_rate, analyse):
+                    sl_ct, tp_ct, ratio_ct, size_ct,
+                    direction_lt, score_lt, sl_lt, tp_lt, ratio_lt, size_lt,
+                    fear_greed, funding_rate, analyse):
 
     emoji_ct = "🟢" if direction_ct == 'ACHAT' else "🔴"
     pct_ct   = round(score_ct / SCORE_MAX * 100)
     now_str  = datetime.now().strftime('%d/%m %H:%M')
 
-    # Alignement CT/LT
     if direction_lt and direction_lt == direction_ct:
         align_icon = "✅ ALIGNE"
     elif direction_lt and direction_lt != direction_ct:
@@ -512,39 +619,31 @@ def build_telegram_msg(symbol, close, direction_ct, score_ct,
     else:
         align_icon = "➖ NEUTRE"
 
-    # Section court terme
+    fr_txt = f"{funding_rate:.4f}" if funding_rate is not None else "N/A"
+    cp     = fmt_price(close)
+    tp_c   = fmt_price(tp_ct)
+    sl_c   = fmt_price(sl_ct)
+
     msg = (
         f"{emoji_ct} *{symbol}* | {direction_ct} | {now_str}\n"
-        f"💰 `{close:.4f} $`\n"
-        f"{'─'*28}\n"
-        f"📈 *COURT TERME* (4h-24h) | Score `{score_ct:.1f}/{SCORE_MAX}` ({pct_ct}%)\n"
-        f"🎯 TP `{tp_ct:.4f}` | SL `{sl_ct:.4f}` | R `{ratio_ct}`\n"
-        f"💼 Taille : `{size_ct}%` du portefeuille\n"
+        f"💰 `{cp}$` | F&G:`{fear_greed}` | {align_icon}\n"
+        f"📈 *CT* `{score_ct:.1f}/{SCORE_MAX}`({pct_ct}%) 💼`{size_ct}%`\n"
+        f"🎯 TP:`{tp_c}` SL:`{sl_c}` R:`{ratio_ct}`\n"
     )
 
-    # Section long terme (si signal disponible)
     if direction_lt:
         emoji_lt = "🟢" if direction_lt == 'ACHAT' else "🔴"
         pct_lt   = round(score_lt / SCORE_MAX_LT * 100)
+        tp_l     = fmt_price(tp_lt)
+        sl_l     = fmt_price(sl_lt)
         msg += (
-            f"{'─'*28}\n"
-            f"📊 *LONG TERME* (3-4j) | {emoji_lt} {direction_lt} | Score `{score_lt:.1f}/{SCORE_MAX_LT}` ({pct_lt}%)\n"
-            f"🎯 TP `{tp_lt:.4f}` | SL `{sl_lt:.4f}` | R `{ratio_lt}`\n"
-            f"💼 Taille : `{size_lt}%` du portefeuille\n"
+            f"📊 *LT* {emoji_lt}{direction_lt} `{score_lt:.1f}/{SCORE_MAX_LT}`({pct_lt}%) 💼`{size_lt}%`\n"
+            f"🎯 TP:`{tp_l}` SL:`{sl_l}` R:`{ratio_lt}`\n"
         )
     else:
-        msg += (
-            f"{'─'*28}\n"
-            f"📊 *LONG TERME* : ➖ Pas de signal D1\n"
-        )
+        msg += "📊 *LT* : ➖ Pas de signal D1\n"
 
-    msg += (
-        f"{'─'*28}\n"
-        f"{align_icon} | F&G `{fear_greed}` | Funding `{f'{funding_rate:.4f}' if funding_rate is not None else 'N/A'}`\n"
-        f"{'─'*28}\n"
-        f"📝 {analyse}"
-    )
-
+    msg += f"📝 {analyse}"
     return msg
 
 # =============================================================
@@ -568,6 +667,8 @@ while True:
     log(f"CT max={SCORE_MAX} | LT max={SCORE_MAX_LT}")
     log(f"{'='*60}")
 
+    check_open_signals()
+
     fear_greed = get_fear_greed()
     log(f"Fear & Greed : {fear_greed}")
 
@@ -588,7 +689,6 @@ while True:
 
             close = float(last.get('close', 0))
 
-            # --- Score court terme ---
             dir_ct, score_ct, thresh_ct, detail_ct, sl_ct, tp_ct = compute_score_ct(
                 last, ema200, funding_rate, fear_greed)
             log_score_detail("CT", dir_ct, score_ct, SCORE_MAX, thresh_ct, detail_ct, sl_ct, tp_ct, close)
@@ -604,33 +704,32 @@ while True:
                 skipped += 1
                 continue
 
-            # --- Score long terme ---
             dir_lt, score_lt, thresh_lt, detail_lt, sl_lt, tp_lt = compute_score_lt(last, ema200)
             log_score_detail("LT", dir_lt, score_lt, SCORE_MAX_LT, thresh_lt, detail_lt, sl_lt, tp_lt, close)
 
-            # LT valide seulement si score suffisant
             if dir_lt is not None and score_lt < thresh_lt:
                 dir_lt = None
 
-            # Ratios et tailles
             ratio_ct  = round(abs(tp_ct-close)/abs(sl_ct-close), 2) if sl_ct != close else 0
             size_ct   = get_position_size(score_ct, SCORE_MAX)
             ratio_lt  = round(abs(tp_lt-close)/abs(sl_lt-close), 2) if (dir_lt and sl_lt != close) else 0
             size_lt   = get_position_size(score_lt, SCORE_MAX_LT) if dir_lt else 0
 
-            # Analyse Gemini
             analyse = demander_analyse_ia(
                 s, last, dir_ct, dir_lt, score_ct, score_lt,
                 sl_ct, tp_ct, sl_lt, tp_lt, funding_rate, fear_greed)
 
-            # Message Telegram
             msg = build_telegram_msg(
                 s, close, dir_ct, score_ct, sl_ct, tp_ct, ratio_ct, size_ct,
                 dir_lt, score_lt, sl_lt, tp_lt, ratio_lt, size_lt,
                 fear_greed, funding_rate, analyse)
 
             ok = envoyer_telegram(msg)
-            if ok: sent += 1
+            if ok:
+                sent += 1
+                add_signal(s, dir_ct, close, tp_ct, sl_ct, "CT")
+                if dir_lt:
+                    add_signal(s, dir_lt, close, tp_lt, sl_lt, "LT")
             time.sleep(INTER_DELAY)
 
         except Exception as e:
@@ -638,11 +737,12 @@ while True:
             import traceback; traceback.print_exc()
             continue
 
-    now_end  = datetime.now().strftime('%H:%M')
+    now_end              = datetime.now().strftime('%H:%M')
+    wins, losses, open_s, wr = get_winrate_summary()
     done_msg = (
         f"🏁 *Cycle termine* ({now_end})\n"
-        f"Signaux : *{sent}/{len(SYMBOLS)}* | "
-        f"Score faible : {low_score} | Skips : {skipped}\n"
+        f"Signaux : *{sent}/{len(SYMBOLS)}* | Skips : {skipped}\n"
+        f"📊 Win Rate : *{wr}%* ({wins}W / {losses}L / {open_s} ouverts)\n"
         f"Prochain scan dans 150 min."
     )
     log(f"\n{done_msg.replace('*','')}")
